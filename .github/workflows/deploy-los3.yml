@@ -1,0 +1,114 @@
+name: Build & Deploy uptime-kuma to los3
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: deploy-uptime-kuma-los3
+  cancel-in-progress: false
+
+env:
+  HOST: los3
+  IMAGE: xidahuang/uptime-kuma
+  REMOTE_COMPOSE_DIR: /root/uptime-kuma
+  IMAGE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+
+jobs:
+  build-deploy:
+    runs-on: [self-hosted, ca1, uptime-kuma]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Prepare image tarball paths
+        shell: bash
+        run: |
+          {
+            echo "TARBALL=${RUNNER_TEMP}/uptime-kuma-image-${GITHUB_RUN_ID}.tar.gz"
+            echo "REMOTE_TARBALL=/tmp/uptime-kuma-incoming-${GITHUB_RUN_ID}.tar.gz"
+          } >> "$GITHUB_ENV"
+
+      - name: Build Docker image on ca1
+        shell: bash
+        run: |
+          docker build \
+            -f docker/dockerfile \
+            --target release \
+            -t "$IMAGE:latest" \
+            -t "$IMAGE:${IMAGE_VERSION}" \
+            .
+
+          docker images "$IMAGE" | awk 'NR <= 5'
+
+      - name: Save image tarball
+        shell: bash
+        run: |
+          rm -f "$TARBALL"
+          docker save "$IMAGE:latest" "$IMAGE:${IMAGE_VERSION}" | gzip -1 > "$TARBALL"
+          ls -lh "$TARBALL"
+
+      - name: Transfer image and compose file to los3
+        shell: bash
+        run: |
+          ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "$HOST" "mkdir -p '$REMOTE_COMPOSE_DIR'"
+          scp -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "$TARBALL" "$HOST:$REMOTE_TARBALL"
+          scp -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 deploy/los3/compose.yaml "$HOST:$REMOTE_COMPOSE_DIR/compose.yaml"
+
+      - name: Load and restart on los3
+        shell: bash
+        run: |
+          ssh -o ConnectTimeout=15 "$HOST" \
+            "REMOTE_TARBALL='$REMOTE_TARBALL' REMOTE_COMPOSE_DIR='$REMOTE_COMPOSE_DIR' bash -s" <<'REMOTE'
+          set -euo pipefail
+          trap 'rm -f "$REMOTE_TARBALL"' EXIT
+
+          mkdir -p "$REMOTE_COMPOSE_DIR/data"
+          cd "$REMOTE_COMPOSE_DIR"
+
+          echo "[los3] loading uptime-kuma image..."
+          docker load < "$REMOTE_TARBALL"
+
+          echo "[los3] compose up -d --no-build..."
+          docker compose -f compose.yaml up -d --no-build
+
+          echo "[los3] waiting for Uptime Kuma..."
+          for attempt in $(seq 1 60); do
+            status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' uptime-kuma 2>/dev/null || echo missing)"
+            if [ "$status" = "healthy" ]; then
+              break
+            fi
+            if curl -fsS http://127.0.0.1:3001 >/dev/null 2>&1; then
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              echo "uptime-kuma did not become ready in time (last status: $status)"
+              docker logs --tail=120 uptime-kuma || true
+              exit 1
+            fi
+            sleep 5
+          done
+
+          curl -fsS http://127.0.0.1:3001 >/dev/null
+          docker image prune -f
+          docker ps --filter name=uptime-kuma --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+          REMOTE
+
+      - name: Cleanup tarball on ca1
+        if: always()
+        shell: bash
+        run: rm -f "$TARBALL"
+
+      - name: Prune old local image tags on ca1
+        if: success()
+        shell: bash
+        run: |
+          docker images "$IMAGE" --format '{{.Tag}} {{.CreatedAt}}' \
+            | awk '$1 != "latest" { print }' \
+            | sort -k2 -r \
+            | awk 'NR>3 {print $1}' \
+            | xargs -r -I{} docker rmi "$IMAGE:{}" 2>/dev/null || true

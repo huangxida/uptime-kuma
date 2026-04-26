@@ -1,0 +1,13 @@
+services:
+  uptime-kuma:
+    image: xidahuang/uptime-kuma:latest
+    container_name: uptime-kuma
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      UPTIME_KUMA_HOST: 0.0.0.0
+      UPTIME_KUMA_PORT: "3001"
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "127.0.0.1:3001:3001"
