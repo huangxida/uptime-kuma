@@ -33,6 +33,14 @@ jobs:
             echo "REMOTE_TARBALL=/tmp/uptime-kuma-incoming-${GITHUB_RUN_ID}.tar.gz"
           } >> "$GITHUB_ENV"
 
+      - name: Build web assets on ca1
+        shell: bash
+        env:
+          PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: "1"
+        run: |
+          npm ci
+          npm run build
+
       - name: Build Docker image on ca1
         shell: bash
         run: |
