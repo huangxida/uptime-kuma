@@ -716,6 +716,21 @@
                                 />
                             </div>
 
+                            <!-- Gamedig Token -->
+                            <div v-if="monitor.type === 'gamedig'" class="my-3">
+                                <label for="gamedig-token" class="form-label">{{ $t("gamedigToken") }}</label>
+                                <input
+                                    id="gamedig-token"
+                                    v-model="monitor.gamedigToken"
+                                    type="password"
+                                    class="form-control"
+                                    :placeholder="$t('gamedigToken')"
+                                />
+                                <div class="form-text">
+                                    {{ $t("gamedigTokenDescription") }}
+                                </div>
+                            </div>
+
                             <!-- SNMP Monitor Type -->
                             <div v-if="monitor.type === 'snmp'" class="my-3">
                                 <label for="snmp_community_string" class="form-label">
@@ -1484,12 +1499,19 @@
                                     monitor.type === 'ping' ||
                                     monitor.type === 'rabbitmq' ||
                                     monitor.type === 'snmp' ||
-                                    monitor.type === 'websocket-upgrade'
+                                    monitor.type === 'websocket-upgrade' ||
+                                    monitor.type === 'kafka-producer'
                                 "
                                 class="my-3"
                             >
                                 <label for="timeout" class="form-label">
-                                    {{ monitor.type === "ping" ? $t("pingGlobalTimeoutLabel") : $t("Request Timeout") }}
+                                    {{
+                                        monitor.type === "ping"
+                                            ? $t("pingGlobalTimeoutLabel")
+                                            : monitor.type === "kafka-producer"
+                                              ? $t("Connection Timeout")
+                                              : $t("Request Timeout")
+                                    }}
                                     <span v-if="monitor.type !== 'ping'">
                                         ({{ $t("timeoutAfter", [monitor.timeout || clampTimeout(monitor.interval)]) }})
                                     </span>
@@ -1766,6 +1788,12 @@
                                     :max="65500"
                                     step="1"
                                 />
+                                <div
+                                    v-if="$root.info.runtime.platform === 'linux' && monitor.packetSize < 16"
+                                    class="form-text text-warning"
+                                >
+                                    {{ $t("pingPacketSizeWarning") }}
+                                </div>
                             </div>
 
                             <!-- per-request timeout -->
@@ -2087,6 +2115,9 @@
                                         <option value="basic">
                                             {{ $t("HTTP Basic Auth") }}
                                         </option>
+                                        <option value="bearer">
+                                            {{ $t("Bearer Token") }}
+                                        </option>
                                         <option value="oauth2-cc">
                                             {{ $t("OAuth2: Client Credentials") }}
                                         </option>
@@ -2112,6 +2143,18 @@
                                             v-model="monitor.basic_auth_pass"
                                             autocomplete="new-password"
                                             :placeholder="$t('Password')"
+                                        />
+                                    </div>
+                                </template>
+
+                                <template v-else-if="monitor.authMethod === 'bearer'">
+                                    <div class="my-3">
+                                        <label for="ws-bearer-token" class="form-label">{{ $t("Token") }}</label>
+                                        <HiddenInput
+                                            id="ws-bearer-token"
+                                            v-model="monitor.bearer_token"
+                                            autocomplete="new-password"
+                                            :placeholder="$t('Token')"
                                         />
                                     </div>
                                 </template>
@@ -2461,6 +2504,9 @@
                                         <option value="basic">
                                             {{ $t("HTTP Basic Auth") }}
                                         </option>
+                                        <option value="bearer">
+                                            {{ $t("Bearer Token") }}
+                                        </option>
                                         <option value="oauth2-cc">
                                             {{ $t("OAuth2: Client Credentials") }}
                                         </option>
@@ -2504,6 +2550,17 @@
                                                 class="form-control"
                                                 :placeholder="$t('mtls-auth-server-ca-placeholder')"
                                             ></textarea>
+                                        </div>
+                                    </template>
+                                    <template v-else-if="monitor.authMethod === 'bearer'">
+                                        <div class="my-3">
+                                            <label for="bearer-token" class="form-label">{{ $t("Token") }}</label>
+                                            <HiddenInput
+                                                id="bearer-token"
+                                                v-model="monitor.bearer_token"
+                                                autocomplete="new-password"
+                                                :placeholder="$t('Token')"
+                                            />
                                         </div>
                                     </template>
                                     <template v-else-if="monitor.authMethod === 'oauth2-cc'">
@@ -2681,6 +2738,9 @@
                                         <option value="basic">
                                             {{ $t("HTTP Basic Auth") }}
                                         </option>
+                                        <option value="bearer">
+                                            {{ $t("Bearer Token") }}
+                                        </option>
                                         <option value="oauth2-cc">
                                             {{ $t("OAuth2: Client Credentials") }}
                                         </option>
@@ -2708,6 +2768,19 @@
                                             autocomplete="new-password"
                                             class="form-control"
                                             :placeholder="$t('Password')"
+                                        />
+                                    </div>
+                                </template>
+                                <template v-else-if="monitor.authMethod === 'bearer'">
+                                    <div class="my-3">
+                                        <label for="bearer-token-globalping" class="form-label">
+                                            {{ $t("Token") }}
+                                        </label>
+                                        <HiddenInput
+                                            id="bearer-token-globalping"
+                                            v-model="monitor.bearer_token"
+                                            autocomplete="new-password"
+                                            :placeholder="$t('Token')"
                                         />
                                     </div>
                                 </template>
@@ -3097,6 +3170,7 @@ const monitorDefaults = {
     proxyId: null,
     basic_auth_user: "",
     basic_auth_pass: "",
+    bearer_token: "",
     mqttUsername: "",
     mqttPassword: "",
     mqttTopic: "",
@@ -3114,6 +3188,7 @@ const monitorDefaults = {
     kafkaProducerSsl: false,
     kafkaProducerAllowAutoTopicCreation: false,
     gamedigGivenPortOnly: true,
+    gamedigToken: "",
     remote_browser: null,
     screenshot_delay: 0,
     rabbitmqNodes: [],
@@ -3591,6 +3666,8 @@ message HealthCheckResponse {
                     this.monitor.timeout = 5;
                 } else if (this.monitor.type === "ping") {
                     this.monitor.timeout = 10;
+                } else if (this.monitor.type === "kafka-producer") {
+                    this.monitor.timeout = 1;
                 } else {
                     this.monitor.timeout = 48;
                 }
@@ -3662,7 +3739,7 @@ message HealthCheckResponse {
                 }
             }
 
-            if (newSubtype !== oldSubtype) {
+            if (oldSubtype && newSubtype !== oldSubtype) {
                 if (newSubtype === "ping") {
                     this.monitor.protocol = "ICMP";
                     this.monitor.port = "80";
